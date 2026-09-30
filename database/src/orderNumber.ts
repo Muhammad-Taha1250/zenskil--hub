@@ -4,9 +4,20 @@
 // values are never duplicated or skipped within a day. The day boundary uses
 // Asia/Karachi, the business timezone.
 
-import type { PrismaClient } from "@prisma/client";
-
-type Db = Pick<PrismaClient, "orderSequence">;
+// Structural, not nominal: this helper must accept a Prisma client OR a
+// transaction client from ANY installed @prisma/client copy. The backend and
+// database packages each resolve their own copy, and nominal Prisma types
+// (e.g. Pick<PrismaClient, ...>) mismatch across module instances (TS2345).
+// This type states exactly what the helper needs — nothing more.
+type Db = {
+  orderSequence: {
+    upsert(args: {
+      where: { day: string };
+      create: { day: string; counter: number };
+      update: { counter: { increment: number } };
+    }): Promise<{ day: string; counter: number }>;
+  };
+};
 
 const TIME_ZONE = "Asia/Karachi";
 

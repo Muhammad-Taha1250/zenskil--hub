@@ -8,6 +8,19 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Pinned explicitly (relative to this schema file): the database package's
+  // own tooling (seed, verify) resolves @prisma/client from database/.
+  output   = "../node_modules/.prisma/client"
+}
+
+// Backend deploys (Back4App, Docker) run `prisma generate` from backend/ with
+// backend/prisma.config.ts pointing at this schema. Pin the output into the
+// backend's own node_modules so the backend build resolves exactly ONE
+// @prisma/client instance — a stray second copy (e.g. at the repo root) makes
+// nominal Prisma types mismatch across module instances (TS2345).
+generator backendClient {
+  provider = "prisma-client-js"
+  output   = "../../backend/node_modules/.prisma/client"
 }
 
 datasource db {
