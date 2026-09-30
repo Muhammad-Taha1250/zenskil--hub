@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { BaileysClient } from './baileys.client';
 import { WhatsappService } from './whatsapp.service';
 import { WhatsappAdminController } from './whatsapp-admin.controller';
+import { WhatsappAutomationController } from './whatsapp-automation.controller';
 import { WhatsappSupportController } from './whatsapp-support.controller';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { SupportModule } from '../support/support.module';
@@ -13,7 +14,7 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [forwardRef(() => ConversationsModule), SupportModule, AuthModule],
   providers: [BaileysClient, WhatsappService],
-  controllers: [WhatsappAdminController, WhatsappSupportController],
+  controllers: [WhatsappAdminController, WhatsappAutomationController, WhatsappSupportController],
   exports: [WhatsappService, BaileysClient],
 })
 export class WhatsappModule {}

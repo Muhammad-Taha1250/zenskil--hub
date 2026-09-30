@@ -18,11 +18,12 @@
     "class-validator": "^0.14.1",
     "helmet": "^8.1.0",
     "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
-  "description": "ZenSkil Hub backend: NestJS API — deterministic order/payment/fulfillment core, WhatsApp ingress, AI tool boundary, admin RBAC.",
+  "description": "ZenSkil Hub backend: NestJS API \u2014 deterministic order/payment/fulfillment core, WhatsApp ingress, AI tool boundary, admin RBAC.",
   "devDependencies": {
     "@nestjs/cli": "^11.0.7",
     "@nestjs/testing": "^11.1.0",
@@ -30,6 +31,7 @@
     "@types/express": "^5.0.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
     "jest": "^30.0.0",
     "prisma": "^6.0.0",
     "source-map-support": "^0.5.21",
@@ -59,7 +61,8 @@
     "test:payments": "tsc -p tsconfig.json && node dist/backend/tests/payment-flow.js",
     "test:fulfillment": "tsc -p tsconfig.json && node dist/backend/tests/fulfillment-flow.js",
     "test:security": "npx tsx tests/security.ts",
-    "test:staging": "tsc -p tsconfig.json && node dist/backend/tests/staging-flow.js"
+    "test:staging": "tsc -p tsconfig.json && node dist/backend/tests/staging-flow.js",
+    "start:prod": "node dist/backend/src/main.js"
   },
   "version": "0.3.0"
 }

@@ -14,6 +14,7 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import QRCode from 'qrcode';
 import qrcode from 'qrcode-terminal';
 import type { StatusUpdate } from './whatsapp.service';
 import {
@@ -38,6 +39,9 @@ export class BaileysError extends Error {
 
 export type InboundHandler = (msg: InboundMessage) => void | Promise<void>;
 export type StatusHandler = (updates: StatusUpdate[]) => void | Promise<void>;
+
+/** Public connection states served by GET /api/whatsapp/status. */
+export type WhatsappConnectionState = 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'QR_READY';
 
 // ------------------------------------------------------------ pure helpers
 
@@ -180,6 +184,8 @@ export class BaileysClient implements WhatsAppClient, OnModuleInit, OnModuleDest
   private destroyed = false;
   private connectionState: 'open' | 'connecting' | 'close' = 'close';
   private qrPending = false;
+  private latestQr: string | null = null;
+  private latestQrDataUri: string | null = null;
   private readonly inboundHandlers: InboundHandler[] = [];
   private readonly statusHandlers: StatusHandler[] = [];
   private readonly pendingInbound: InboundMessage[] = [];
@@ -197,6 +203,31 @@ export class BaileysClient implements WhatsAppClient, OnModuleInit, OnModuleDest
 
   get awaitingQrScan(): boolean {
     return this.qrPending;
+  }
+
+  /**
+   * Public connection state for the automation status endpoint.
+   * QR_READY takes precedence over CONNECTING: when a QR is pending the
+   * operator's next action is scanning, not waiting.
+   */
+  getConnectionState(): WhatsappConnectionState {
+    if (this.connectionState === 'open') return 'CONNECTED';
+    if (this.qrPending) return 'QR_READY';
+    if (this.connectionState === 'connecting') return 'CONNECTING';
+    return 'DISCONNECTED';
+  }
+
+  /**
+   * PNG data-URI of the latest pairing QR (for GET /api/whatsapp/qr).
+   * Null when no QR is pending (already paired, or socket still connecting).
+   * The URI is cached per QR string; a fresh QR invalidates the cache.
+   */
+  async getQrDataUri(): Promise<string | null> {
+    if (!this.latestQr) return null;
+    if (!this.latestQrDataUri) {
+      this.latestQrDataUri = await QRCode.toDataURL(this.latestQr, { width: 320, margin: 2 });
+    }
+    return this.latestQrDataUri;
   }
 
   async onModuleInit(): Promise<void> {
@@ -281,18 +312,25 @@ export class BaileysClient implements WhatsAppClient, OnModuleInit, OnModuleDest
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       this.qrPending = true;
+      // Kept for the automation QR endpoint (data-URI) as well as the log.
+      this.latestQr = qr;
+      this.latestQrDataUri = null;
       this.logger.log('WhatsApp QR code received — scan it from WhatsApp → Linked devices:');
       qrcode.generate(qr, { small: true });
     }
     if (connection === 'open') {
       this.connectionState = 'open';
       this.qrPending = false;
+      this.latestQr = null;
+      this.latestQrDataUri = null;
       this.logger.log(`WhatsApp connected as ${this.sock?.user?.id ?? 'unknown device'}`);
     } else if (connection === 'connecting') {
       this.connectionState = 'connecting';
     } else if (connection === 'close') {
       this.connectionState = 'close';
       this.qrPending = false;
+      this.latestQr = null;
+      this.latestQrDataUri = null;
       if (this.destroyed) return;
       const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       if (statusCode === DisconnectReason.loggedOut) {
@@ -304,6 +342,9 @@ export class BaileysClient implements WhatsAppClient, OnModuleInit, OnModuleDest
         this.sock = null;
         return;
       }
+      // Automatic retry: connectionClosed, connectionLost, restartRequired,
+      // and any other non-logout close. The multi-file auth session stays
+      // valid, so a reconnect resumes without a new QR scan.
       this.logger.warn(`WhatsApp connection closed (code ${statusCode ?? 'unknown'}) — reconnecting…`);
       this.sock = null;
       await new Promise((r) => setTimeout(r, RECONNECT_DELAY_MS));

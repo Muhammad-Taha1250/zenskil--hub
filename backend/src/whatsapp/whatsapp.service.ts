@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, OnModuleInit, forwardRef } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, OnModuleInit, ServiceUnavailableException, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NotificationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
@@ -331,6 +331,31 @@ export class WhatsappService implements OnModuleInit {
   async sendDiagnosticText(to: string, body: string): Promise<{ providerMessageId: string }> {
     if (!this.client) throw new BadRequestException('WhatsApp client not configured');
     return this.client.sendText({ to, body: body.slice(0, 4096), kind: 'transactional' });
+  }
+
+  /**
+   * Automation/operator text send (POST /api/whatsapp/send).
+   * Deliberate policy bypass like sendDiagnosticText: the caller proved
+   * AUTOMATION_SERVICE_TOKEN, so this is an explicit operator action, not
+   * customer-pipeline traffic (which must keep using the 24h-window paths:
+   * sendText / sendTemplateNotification). The send is audited.
+   */
+  async sendAutomationText(to: string, body: string): Promise<{ providerMessageId: string }> {
+    if (!this.client) throw new BadRequestException('WhatsApp client not configured');
+    if (!this.connected) throw new ServiceUnavailableException('WhatsApp socket not connected');
+    const { providerMessageId } = await this.client.sendText({
+      to,
+      body: body.slice(0, 4096),
+      kind: 'transactional',
+    });
+    await this.audit.log({
+      actorType: 'SYSTEM',
+      action: 'whatsapp.automation_send',
+      entityType: 'message',
+      entityId: providerMessageId,
+      after: { to },
+    });
+    return { providerMessageId };
   }
 
   async downloadMedia(mediaId: string): Promise<{ data: Buffer; mimeType: string }> {
