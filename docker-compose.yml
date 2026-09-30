@@ -1,0 +1,26 @@
+# ZenSkil Hub — infrastructure (production reference).
+# Local Phase-2 development uses the host PostgreSQL; this file documents
+# the production topology built out in Phase 12.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zenskill}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-zenskill_prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zenskill}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # backend:    (Phase 3)
+  # frontend:   (Phase 9)
+  # n8n:        (Phase 5)
+  # caddy:      (Phase 12)
+
+volumes:
+  pgdata:

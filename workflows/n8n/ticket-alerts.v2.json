@@ -1,0 +1,272 @@
+{
+  "name": "ZenSkil — Ticket Alerts",
+  "version": 2,
+  "nodes": [
+    {
+      "id": "node-1-in72k3",
+      "name": "README — credentials",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "content": "## ZenSkil automation — setup\n1. Create an **HTTP Header Auth** credential named `ZenSkil Backend API` with header `x-service-token` = the server's AUTOMATION_SERVICE_TOKEN.\n2. Set env `ZENSKILL_API_BASE_URL` on this n8n instance (e.g. https://api.zenskill.example.com).\n3. Activate the workflow. All business decisions live in the backend;\nthis workflow only schedules and dispatches.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "node-24-vlh7pv",
+      "name": "Admin channel",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "content": "Point env ZENSKILL_ADMIN_ALERT_URL at your admin channel (Slack webhook, Telegram bot, or email service) — the BACKEND reads it, not n8n. Claiming a ticket only ENQUEUES an alert in the admin_alert_outbox table; the backend delivers it with backoff (1m→5m→30m→2h→8h, max 5 attempts) via the in-process cron and the \"Process alert outbox\" step. Monitor: GET /api/v1/automation/support/alerts/outbox.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "node-18-ca107b",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-19-23kv9w",
+      "name": "Fetch unalerted tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/support/tickets/alerts?limit=50",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "node-20-i8npmi",
+      "name": "Loop tickets",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "node-21-5fcmvs",
+      "name": "Claim ticket alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/support/tickets/={{ $json.id }}/alert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "node-22-tizlhr",
+      "name": "Claimed by this run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-23-43a89t",
+      "name": "Process alert outbox",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/support/alerts/process?limit=50",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch unalerted tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch unalerted tickets": {
+      "main": [
+        [
+          {
+            "node": "Loop tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop tickets": {
+      "main": [
+        [
+          {
+            "node": "Claim ticket alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim ticket alert": {
+      "main": [
+        [
+          {
+            "node": "Claimed by this run?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed by this run?": {
+      "main": [
+        [
+          {
+            "node": "Process alert outbox",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process alert outbox": {
+      "main": [
+        [
+          {
+            "node": "Loop tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "zenskill": {
+      "phase": 5,
+      "workflowVersion": 1,
+      "backend": "authoritative — n8n is a thin dispatcher"
+    }
+  }
+}

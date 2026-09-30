@@ -1,0 +1,786 @@
+// =============================================================================
+// ZenSkil Hub — Prisma schema (Phase 2)
+// Conventions: UUID PKs, timestamptz UTC, money in integer paisa, PKR default.
+// Append-only tables (audit_logs, webhook_events) are additionally protected
+// by Postgres RULEs in the migration SQL.
+// Requires the pgvector extension (CREATE EXTENSION vector) — see migration.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum CustomerState {
+  NEW
+  BROWSING
+  SELECTING_PRODUCT
+  SELECTING_PLAN
+  WAITING_FOR_CUSTOMER_DETAILS
+  ORDER_CREATED
+  AWAITING_PAYMENT
+  PAYMENT_PROCESSING
+  PAYMENT_CONFIRMED
+  FULFILLMENT_PENDING
+  FULFILLMENT_PROCESSING
+  FULFILLED
+  ACTIVE
+  EXPIRING_SOON
+  EXPIRED
+  SUPPORT_REQUIRED
+  CANCELLED
+  REFUND_REQUESTED
+  REFUNDED
+}
+
+enum OrderStatus {
+  DRAFT
+  AWAITING_PAYMENT
+  PAYMENT_PROCESSING
+  PAYMENT_CONFIRMED
+  FULFILLING
+  FULFILLED
+  ACTIVE
+  CANCELLED
+  REFUND_REQUESTED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  EXPIRED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  MANUAL_REVIEW_REQUIRED
+}
+
+enum FulfillmentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  MANUAL_REVIEW
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  WAITING_CUSTOMER
+  WAITING_INTERNAL
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketAuthorType {
+  CUSTOMER
+  AGENT
+  AI
+  SYSTEM
+}
+
+enum Role {
+  OWNER
+  FINANCE
+  SUPPORT
+  VIEWER
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum ApprovalActionType {
+  REFUND
+  MANUAL_PAYMENT
+  PRICE_CHANGE
+  POLICY_CHANGE
+  CREDENTIAL_CHANGE
+  CUSTOMER_DELETE
+}
+
+enum KbStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum Language {
+  ENGLISH    @map("en")
+  ROMAN_URDU @map("roman-ur")
+  URDU       @map("ur")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRING_SOON
+  EXPIRED
+  CANCELLED
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+enum TemplateCategory {
+  UTILITY
+  MARKETING
+  AUTHENTICATION
+}
+
+enum TemplateMetaStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  DUPLICATE
+}
+
+enum ActorType {
+  ADMIN
+  CUSTOMER
+  SYSTEM
+  AI
+}
+
+// -----------------------------------------------------------------------------
+// Identity & access
+// -----------------------------------------------------------------------------
+
+model Customer {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  whatsappNumber String        @unique @map("whatsapp_number")
+  name           String?
+  email          String?
+  language       Language      @default(ENGLISH)
+  optedIn        Boolean       @default(true) @map("opted_in")
+  state          CustomerState @default(NEW)
+  notes          String?       @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user          User?
+  sessions      ConversationSession[]
+  orders        Order[]
+  subscriptions Subscription[]
+  tickets       SupportTicket[]
+  notifications Notification[]
+  attributions  Attribution[]
+
+  @@map("customers")
+}
+
+/// Optional auth identities for the future website customer portal.
+/// Unused by WhatsApp flows in v1.
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId   String?   @unique @map("customer_id") @db.Uuid
+  email        String?   @unique
+  passwordHash String?   @map("password_hash")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@map("users")
+}
+
+model AdminUser {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique
+  name         String
+  passwordHash String    @map("password_hash")
+  role         Role      @default(VIEWER)
+  totpSecret   String?   @map("totp_secret") // encrypted at rest (Phase 3/10)
+  totpEnabled  Boolean   @default(false) @map("totp_enabled")
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  // Phase 10 (T6): brute-force lockout (5 failures -> 15-min lockout) and
+  // JWT session revocation (bump token_version to invalidate all tokens).
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until") @db.Timestamptz(6)
+  tokenVersion        Int       @default(0) @map("token_version")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  reviewedPayments    Payment[]           @relation("PaymentReviewer")
+  requestedRefunds    Refund[]            @relation("RefundRequester")
+  approvedRefunds     Refund[]            @relation("RefundApprover")
+  assignedTickets     SupportTicket[]     @relation("TicketAssignee")
+  createdCoupons      Coupon[]            @relation("CouponCreator")
+  assignedFulfillment FulfillmentTask[]   @relation("FulfillmentAssignee")
+  requestedApprovals  PendingApproval[]   @relation("ApprovalRequester")
+  decidedApprovals    PendingApproval[]   @relation("ApprovalDecider")
+  updatedDocuments    KnowledgeBaseDocument[] @relation("DocUpdater")
+  updatedSettings     SystemSetting[]     @relation("SettingUpdater")
+
+  @@map("admin_users")
+}
+
+// -----------------------------------------------------------------------------
+// Catalog
+// -----------------------------------------------------------------------------
+
+model Product {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug             String   @unique
+  name             String
+  category         String
+  shortDescription String?  @map("short_description")
+  longDescription  String?  @map("long_description") @db.Text
+  isActive         Boolean  @default(true) @map("is_active")
+  sortOrder        Int      @default(0) @map("sort_order")
+  // Phase 8 (G-1): owner-editable per-product fulfillment instructions
+  // ("what does the customer receive"). Snapshotted into each fulfillment
+  // task so the admin queue always tells staff what to deliver.
+  fulfillmentNotes String?  @map("fulfillment_notes") @db.Text
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  plans      Plan[]
+  orderItems OrderItem[]
+
+  @@map("products")
+}
+
+model Plan {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  name           String
+  durationMonths Int      @map("duration_months")
+  durationDays   Int      @map("duration_days")
+  pricePaisa     Int      @map("price_paisa")
+  currency       String   @default("PKR")
+  isActive       Boolean  @default(true) @map("is_active")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  product       Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  orderItems    OrderItem[]
+  subscriptions Subscription[]
+
+  @@unique([productId, name])
+  @@map("plans")
+}
+
+// -----------------------------------------------------------------------------
+// Orders & money
+// -----------------------------------------------------------------------------
+
+model Order {
+  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber      String      @unique @map("order_number") // ZSH-YYYYMMDD-XXXXX, immutable
+  customerId       String      @map("customer_id") @db.Uuid
+  status           OrderStatus @default(DRAFT)
+  currency         String      @default("PKR")
+  subtotalPaisa    Int         @map("subtotal_paisa")
+  discountPaisa    Int         @default(0) @map("discount_paisa")
+  totalPaisa       Int         @map("total_paisa")
+  couponId         String?     @map("coupon_id") @db.Uuid
+  attribution      Json        @default("{}")
+  sourceChannel    String      @default("whatsapp") @map("source_channel")
+  paymentExpiresAt DateTime?   @map("payment_expires_at") @db.Timestamptz(6)
+  abandonmentReminderStage Int @default(0) @map("abandonment_reminder_stage") // 0=none,1=first sent,2=final sent
+  abandonmentReminderStageAt DateTime? @map("abandonment_reminder_stage_at") @db.Timestamptz(6)
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  coupon           Coupon?           @relation(fields: [couponId], references: [id], onDelete: Restrict)
+  items            OrderItem[]
+  payments         Payment[]
+  fulfillmentTasks FulfillmentTask[]
+  subscription     Subscription?
+  tickets          SupportTicket[]
+  attributions     Attribution[]
+
+  @@index([customerId, createdAt])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId       String   @map("order_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  planId        String   @map("plan_id") @db.Uuid
+  quantity      Int      @default(1)
+  unitPricePaisa Int     @map("unit_price_paisa") // price snapshot at purchase
+  totalPaisa    Int      @map("total_paisa")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  plan    Plan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@map("order_items")
+}
+
+model Payment {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId           String        @map("order_id") @db.Uuid
+  provider          String        // e.g. "manual_transfer", "jazzcash", ...
+  providerPaymentId String?       @unique @map("provider_payment_id")
+  amountPaisa       Int           @map("amount_paisa")
+  currency          String        @default("PKR")
+  status            PaymentStatus @default(PENDING)
+  proofUrl          String?       @map("proof_url") // private storage, signed URLs only
+  proofHash         String?       @map("proof_hash")
+  reviewedBy        String?       @map("reviewed_by") @db.Uuid
+  reviewedAt        DateTime?     @map("reviewed_at") @db.Timestamptz(6)
+  failureReason     String?       @map("failure_reason") @db.Text
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order    Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  reviewer AdminUser?   @relation("PaymentReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  attempts PaymentAttempt[]
+  refunds  Refund[]
+
+  @@index([status])
+  @@map("payments")
+}
+
+model PaymentAttempt {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentId        String   @map("payment_id") @db.Uuid
+  idempotencyKey   String   @unique @map("idempotency_key")
+  requestPayload   Json     @map("request_payload")
+  responsePayload  Json?    @map("response_payload")
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@map("payment_attempts")
+}
+
+model Refund {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentId        String         @map("payment_id") @db.Uuid
+  amountPaisa      Int            @map("amount_paisa")
+  reason           String         @db.Text
+  status           ApprovalStatus @default(PENDING)
+  requestedBy      String         @map("requested_by") @db.Uuid
+  approvedBy       String?        @map("approved_by") @db.Uuid
+  providerRefundId String?        @map("provider_refund_id")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  payment   Payment    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  requester AdminUser  @relation("RefundRequester", fields: [requestedBy], references: [id], onDelete: Restrict)
+  approver  AdminUser? @relation("RefundApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@map("refunds")
+}
+
+model Coupon {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code      String     @unique
+  type      CouponType
+  value     Int // percent 1-100, or fixed paisa
+  maxUses   Int?       @map("max_uses")
+  usedCount Int        @default(0) @map("used_count")
+  validFrom DateTime?  @map("valid_from") @db.Timestamptz(6)
+  validTo   DateTime?  @map("valid_to") @db.Timestamptz(6)
+  isActive  Boolean    @default(true) @map("is_active")
+  createdBy String     @map("created_by") @db.Uuid
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  creator AdminUser @relation("CouponCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  orders  Order[]
+
+  @@map("coupons")
+}
+
+// -----------------------------------------------------------------------------
+// Subscriptions
+// -----------------------------------------------------------------------------
+
+model Subscription {
+  id                    String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId            String             @map("customer_id") @db.Uuid
+  orderId               String             @unique @map("order_id") @db.Uuid
+  productId             String             @map("product_id") @db.Uuid
+  planId                String             @map("plan_id") @db.Uuid
+  startsAt              DateTime           @map("starts_at") @db.Timestamptz(6)
+  expiresAt             DateTime           @map("expires_at") @db.Timestamptz(6)
+  status                SubscriptionStatus @default(ACTIVE)
+  renewalReminderStage  Int                @default(0) @map("renewal_reminder_stage")
+  renewalReminderStageAt DateTime?        @map("renewal_reminder_stage_at") @db.Timestamptz(6)
+  createdAt             DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  plan     Plan     @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([expiresAt, status])
+  @@map("subscriptions")
+}
+
+// -----------------------------------------------------------------------------
+// Conversations
+// -----------------------------------------------------------------------------
+
+model ConversationSession {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId    String        @map("customer_id") @db.Uuid
+  channel       String        @default("whatsapp")
+  state         CustomerState @default(NEW)
+  context       Json          @default("{}")
+  returnState   CustomerState? @map("return_state")
+  lastInboundAt DateTime?     @map("last_inbound_at") @db.Timestamptz(6)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([customerId, updatedAt])
+  @@map("conversation_sessions")
+}
+
+model Message {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId         String            @map("session_id") @db.Uuid
+  direction         MessageDirection
+  whatsappMessageId String?           @unique @map("whatsapp_message_id")
+  messageType       String            @default("text") @map("message_type")
+  bodyText          String?           @map("body_text") @db.Text
+  templateName      String?           @map("template_name")
+  status            NotificationStatus @default(QUEUED)
+  errorCode         String?           @map("error_code")
+  retryCount        Int               @default(0) @map("retry_count")
+  nextRetryAt       DateTime?         @map("next_retry_at") @db.Timestamptz(6)
+  payload           Json? // exact outbound request, so retries re-send faithfully
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("messages")
+}
+
+// -----------------------------------------------------------------------------
+// Support
+// -----------------------------------------------------------------------------
+
+model SupportTicket {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketNumber String         @unique @map("ticket_number") // ZSH-T-XXXXX
+  customerId   String         @map("customer_id") @db.Uuid
+  orderId      String?        @map("order_id") @db.Uuid
+  subject      String
+  status       TicketStatus   @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  assignedTo   String?        @map("assigned_to") @db.Uuid
+  returnState  CustomerState? @map("return_state")
+  resolvedAt   DateTime?      @map("resolved_at") @db.Timestamptz(6)
+  closedAt     DateTime?      @map("closed_at") @db.Timestamptz(6)
+  alertedAt    DateTime?      @map("alerted_at") @db.Timestamptz(6) // admin alert sent (n8n ticket-alerts)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  order    Order?     @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  assignee AdminUser? @relation("TicketAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  messages TicketMessage[]
+  adminAlert AdminAlertOutbox?
+
+  @@index([status, priority])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId   String           @map("ticket_id") @db.Uuid
+  authorType TicketAuthorType @map("author_type")
+  authorId   String?          @map("author_id") @db.Uuid
+  bodyText   String           @map("body_text") @db.Text
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+// -----------------------------------------------------------------------------
+// Knowledge base
+// -----------------------------------------------------------------------------
+
+model KnowledgeBaseDocument {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug      String   @unique
+  title     String
+  language  String   @default("en")
+  content   String   @db.Text
+  version   Int      @default(1)
+  status    KbStatus @default(DRAFT)
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  updater AdminUser?          @relation("DocUpdater", fields: [updatedBy], references: [id], onDelete: SetNull)
+  chunks  KnowledgeBaseChunk[]
+
+  @@map("knowledge_base_documents")
+}
+
+model KnowledgeBaseChunk {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String  @map("document_id") @db.Uuid
+  chunkIndex Int     @map("chunk_index")
+  content    String  @db.Text
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  document KnowledgeBaseDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@map("knowledge_base_chunks")
+}
+
+// -----------------------------------------------------------------------------
+// Notifications & integrations
+// -----------------------------------------------------------------------------
+
+model Notification {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId        String             @map("customer_id") @db.Uuid
+  channel           String             @default("whatsapp")
+  templateName      String?            @map("template_name")
+  payload           Json               @default("{}")
+  status            NotificationStatus @default(QUEUED)
+  whatsappMessageId String?            @map("whatsapp_message_id")
+  sentAt            DateTime?          @map("sent_at") @db.Timestamptz(6)
+  error             String?            @db.Text
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+  @@map("notifications")
+}
+
+model MessageTemplate {
+  id         String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String
+  language   String             @default("en")
+  category   TemplateCategory   @default(UTILITY)
+  body       String             @db.Text
+  variables  Json               @default("[]")
+  metaStatus TemplateMetaStatus @default(DRAFT) @map("meta_status")
+  isActive   Boolean            @default(true) @map("is_active")
+  createdAt  DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([name, language])
+  @@map("message_templates")
+}
+
+model WebhookEvent {
+  id               String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source           String // "whatsapp" | "payment:<provider>"
+  eventId          String                  @unique @map("event_id")
+  signatureValid   Boolean                 @map("signature_valid")
+  payload          Json
+  processingStatus WebhookProcessingStatus @default(RECEIVED) @map("processing_status")
+  processedAt      DateTime?               @map("processed_at") @db.Timestamptz(6)
+  error            String?                 @db.Text
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([source, createdAt])
+  @@map("webhook_events")
+}
+
+model Attribution {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String?  @map("customer_id") @db.Uuid
+  orderId    String?  @map("order_id") @db.Uuid
+  source     String // "meta_ad" | "organic" | "referral" | ...
+  campaign   String?
+  adset      String?
+  ad         String?
+  utm        Json     @default("{}")
+  referral   Json     @default("{}") // Meta click-to-WhatsApp referral object
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  order    Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@map("attributions")
+}
+
+// -----------------------------------------------------------------------------
+// Operations & governance
+// -----------------------------------------------------------------------------
+
+model FulfillmentTask {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId     String            @map("order_id") @db.Uuid
+  taskType    String            @default("deliver_service") @map("task_type")
+  provider    String            @default("manual") // "manual" | "api:<name>"
+  status      FulfillmentStatus @default(PENDING)
+  payload     Json              @default("{}")
+  result      Json?
+  attempts    Int               @default(0)
+  assignedTo  String?           @map("assigned_to") @db.Uuid
+  completedAt DateTime?         @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order    Order      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  assignee AdminUser? @relation("FulfillmentAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("fulfillment_tasks")
+}
+
+model PendingApproval {
+  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actionType  ApprovalActionType  @map("action_type")
+  entityType  String              @map("entity_type")
+  entityId    String              @map("entity_id") @db.Uuid
+  requestedBy String              @map("requested_by") @db.Uuid
+  payload     Json                @default("{}")
+  status      ApprovalStatus      @default(PENDING)
+  decidedBy   String?             @map("decided_by") @db.Uuid
+  decidedAt   DateTime?           @map("decided_at") @db.Timestamptz(6)
+  reason      String              @db.Text // mandatory justification
+  decisionNote String?            @map("decision_note") @db.Text // decider's note
+  expiresAt   DateTime?           @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  requester AdminUser  @relation("ApprovalRequester", fields: [requestedBy], references: [id], onDelete: Restrict)
+  decider   AdminUser? @relation("ApprovalDecider", fields: [decidedBy], references: [id], onDelete: SetNull)
+
+  @@index([status, actionType])
+  @@map("pending_approvals")
+}
+
+model SystemSetting {
+  key         String    @id
+  value       Json
+  description String?
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  updater AdminUser? @relation("SettingUpdater", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("system_settings")
+}
+
+model BusinessHours {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayOfWeek  Int      @unique @map("day_of_week") // 0=Sunday .. 6=Saturday
+  openTime   String?  @map("open_time") // "09:00"
+  closeTime  String?  @map("close_time") // "21:00"
+  isClosed   Boolean  @default(false) @map("is_closed")
+  timezone   String   @default("Asia/Karachi")
+
+  @@map("business_hours")
+}
+
+/// Append-only. Updates/deletes are blocked by Postgres RULEs in the migration.
+model AuditLog {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorType ActorType @map("actor_type")
+  actorId   String?   @map("actor_id") @db.Uuid
+  action    String
+  entityType String   @map("entity_type")
+  entityId  String?   @map("entity_id") @db.Uuid
+  before    Json?
+  after     Json?
+  ipAddress String?   @map("ip_address")
+  requestId String?   @map("request_id")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// Order-number sequence (one row per Asia/Karachi calendar day).
+// Incremented atomically via upsert; never reused, never reset within a day.
+// -----------------------------------------------------------------------------
+
+model OrderSequence {
+  day     String @id @db.Char(8) // YYYYMMDD (Asia/Karachi)
+  counter Int    @default(0)
+
+  @@map("order_sequences")
+}
+
+// -----------------------------------------------------------------------------
+// Admin alert outbox: durable retry for ticket admin notifications.
+// claimTicketAlert enqueues one row per ticket (UNIQUE on ticket_id); the
+// processor POSTs the payload to ZENSKILL_ADMIN_ALERT_URL with backoff until
+// SENT or DEAD, so a failed admin webhook never silently loses a ticket alert.
+// -----------------------------------------------------------------------------
+model AdminAlertOutbox {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId     String   @unique @map("ticket_id") @db.Uuid
+  payload      Json     @db.JsonB
+  status       String   @default("PENDING") // PENDING | SENT | DEAD
+  attemptCount Int      @default(0) @map("attempt_count")
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  // Phase 6: delivery lease. The processor claims a row by setting this to
+  // now()+lease in one atomic UPDATE and POSTs the webhook outside any
+  // transaction. Stale leases (crashed workers) are reclaimed each sweep.
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(6)
+  lastError    String?  @map("last_error")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt       DateTime? @map("sent_at") @db.Timestamptz(6)
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([nextAttemptAt], map: "admin_alert_outbox_due_idx")
+  @@map("admin_alert_outbox")
+}

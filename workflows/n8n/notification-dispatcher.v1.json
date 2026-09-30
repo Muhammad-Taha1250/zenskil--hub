@@ -1,0 +1,170 @@
+{
+  "name": "ZenSkil — Notification Dispatcher",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "node-1-in72k3",
+      "name": "README — credentials",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "content": "## ZenSkil automation — setup\n1. Create an **HTTP Header Auth** credential named `ZenSkil Backend API` with header `x-service-token` = the server's AUTOMATION_SERVICE_TOKEN.\n2. Set env `ZENSKILL_API_BASE_URL` on this n8n instance (e.g. https://api.zenskill.example.com).\n3. Activate the workflow. All business decisions live in the backend;\nthis workflow only schedules and dispatches.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "node-2-az8rmo",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-3-havn7v",
+      "name": "Fetch pending notifications",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/notifications/pending?limit=50",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "node-4-hg30y1",
+      "name": "Loop notifications",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "node-5-rfifml",
+      "name": "Dispatch notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/notifications/={{ $json.id }}/dispatch",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch pending notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch pending notifications": {
+      "main": [
+        [
+          {
+            "node": "Loop notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop notifications": {
+      "main": [
+        [
+          {
+            "node": "Dispatch notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch notification": {
+      "main": [
+        [
+          {
+            "node": "Loop notifications",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "zenskill": {
+      "phase": 5,
+      "workflowVersion": 1,
+      "backend": "authoritative — n8n is a thin dispatcher"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+# Baileys WhatsApp session credentials — never commit; must persist on the
+# server (persistent disk) or the QR has to be re-scanned after every deploy.
+baileys_auth/

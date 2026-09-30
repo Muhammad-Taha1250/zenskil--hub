@@ -1,0 +1,108 @@
+{
+  "name": "ZenSkil — Subscription Expiry Sweeper",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "node-1-in72k3",
+      "name": "README — credentials",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "content": "## ZenSkil automation — setup\n1. Create an **HTTP Header Auth** credential named `ZenSkil Backend API` with header `x-service-token` = the server's AUTOMATION_SERVICE_TOKEN.\n2. Set env `ZENSKILL_API_BASE_URL` on this n8n instance (e.g. https://api.zenskill.example.com).\n3. Activate the workflow. All business decisions live in the backend;\nthis workflow only schedules and dispatches.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "node-17-n4r8qk",
+      "name": "Idempotent",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "content": "The sweeper is idempotent: ACTIVE→EXPIRING_SOON at 7d, →EXPIRED after expiry+grace. It also runs in-process every 15 min; this workflow is a second trigger and is safe to overlap.",
+        "height": 320,
+        "width": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "node-15-f97h8e",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-16-l49cs4",
+      "name": "Run expiry sweeper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "ZenSkil Backend API"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ZENSKILL_API_BASE_URL }}/api/v1/automation/subscriptions/sweeper/run",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Run expiry sweeper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "zenskill": {
+      "phase": 5,
+      "workflowVersion": 1,
+      "backend": "authoritative — n8n is a thin dispatcher"
+    }
+  }
+}

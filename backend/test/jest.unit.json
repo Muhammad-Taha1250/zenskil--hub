@@ -1,0 +1,20 @@
+{
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
+  "moduleNameMapper": {
+    "^@zenskill-hub/database/(.*)$": "<rootDir>/../../database/src/$1",
+    "^@whiskeysockets/baileys$": "<rootDir>/../test/mocks/baileys.mock.ts"
+  },
+  "rootDir": "../src",
+  "testEnvironment": "node",
+  "testRegex": ".*\\.spec\\.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "transformIgnorePatterns": [
+    "node_modules/(?!(age-encryption|@noble|@scure)/)"
+  ]
+}
